@@ -411,21 +411,27 @@ class ProcessadorRegistros:
 
 
 # ==============================================================================
-# Gerador de grafico — produz HTML interativo com Chart.js e zoom
+# Gerador de grafico — produz HTML interativo com Plotly
 # ==============================================================================
 
 class GeradorGrafico:
     """
     Responsavel por gerar um arquivo HTML com grafico interativo
-    de utilizacao de rede usando Chart.js com plugin de zoom/pan.
+    de utilizacao de rede usando Plotly (carregado via CDN).
 
     O grafico exibe:
-        - Linha de Download (pontos + area preenchida)
-        - Linha de Upload (pontos + area preenchida)
-        - Linha de Total (tracejada, sem pontos)
-        - Linha de threshold WARN em 75%
+        - Linha de Download (pontos + area preenchida, azul)
+        - Linha de Upload (pontos + area preenchida, verde)
+        - Linha de Total (tracejada laranja, sem pontos)
+        - Linha horizontal de threshold WARN em 75% (amarelo tracejado)
 
-    Suporta zoom via scroll do mouse e pan via arraste.
+    Recursos nativos do Plotly utilizados:
+        - Zoom via scroll e selecao de area (box/lasso select)
+        - Pan via arraste
+        - Hover unificado mostrando todos os valores no mesmo timestamp
+        - Botoes de controle na barra de ferramentas (zoom, pan, reset)
+        - Download direto como PNG pelo botao da toolbar
+        - Rangeslider abaixo do grafico para navegar no historico
 
     Parametros
     ----------
@@ -444,30 +450,38 @@ class GeradorGrafico:
         """
         self.caminho_saida = caminho_saida
 
-    def _formatar_timestamp(self, ts: datetime) -> str:
+    def _estatisticas(self, valores: list) -> dict:
         """
-        Formata um datetime para exibicao legivel no eixo X.
+        Calcula maximo e media de uma lista de valores numericos.
 
         Parametros
         ----------
-        ts : datetime
-            Timestamp do registro.
+        valores : list of float
+            Lista de percentuais coletados.
 
         Retorna
         -------
-        str
-            String no formato "DD/MM HH:MM:SS".
+        dict com chaves 'max' e 'avg' (strings formatadas com 2 decimais).
         """
-        return ts.strftime("%d/%m %H:%M:%S")
+        if not valores:
+            return {"max": "0.00", "avg": "0.00"}
+        return {
+            "max": f"{max(valores):.2f}",
+            "avg": f"{sum(valores) / len(valores):.2f}",
+        }
 
     def gerar(self, registros: list) -> None:
         """
-        Gera o arquivo HTML com o grafico a partir dos registros.
+        Gera o arquivo HTML com o grafico Plotly a partir dos registros.
+
+        Utiliza plotly.js via CDN — nao requer instalacao local do Plotly.
+        O HTML gerado e autocontido e pode ser aberto em qualquer navegador.
 
         Parametros
         ----------
         registros : list of dict
             Lista de registros retornados por ProcessadorRegistros.processar().
+            Cada registro deve ter: timestamp (datetime), download, upload, total.
 
         Raises
         ------
@@ -478,20 +492,24 @@ class GeradorGrafico:
             print("Nenhum registro valido encontrado para gerar o grafico.")
             sys.exit(1)
 
-        labels    = [self._formatar_timestamp(r["timestamp"]) for r in registros]
-        downloads = [r["download"] for r in registros]
-        uploads   = [r["upload"]   for r in registros]
-        totais    = [r["total"]    for r in registros]
-
-        labels_js    = json.dumps(labels)
-        downloads_js = json.dumps(downloads)
-        uploads_js   = json.dumps(uploads)
-        totais_js    = json.dumps(totais)
+        timestamps = [r["timestamp"].strftime("%Y-%m-%d %H:%M:%S") for r in registros]
+        downloads  = [r["download"] for r in registros]
+        uploads    = [r["upload"]   for r in registros]
+        totais     = [r["total"]    for r in registros]
 
         n      = len(registros)
-        inicio = self._formatar_timestamp(registros[0]["timestamp"])
-        fim    = self._formatar_timestamp(registros[-1]["timestamp"])
+        inicio = registros[0]["timestamp"].strftime("%d/%m %H:%M:%S")
+        fim    = registros[-1]["timestamp"].strftime("%d/%m %H:%M:%S")
         gerado = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+        dl_stats  = self._estatisticas(downloads)
+        ul_stats  = self._estatisticas(uploads)
+        tot_stats = self._estatisticas(totais)
+
+        ts_js  = json.dumps(timestamps)
+        dl_js  = json.dumps(downloads)
+        ul_js  = json.dumps(uploads)
+        tot_js = json.dumps(totais)
 
         html = f"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -499,20 +517,17 @@ class GeradorGrafico:
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Utilizacao de Rede — TRMM</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2.32.0/plotly.min.js"></script>
 <style>
   :root {{
-    --bg:      #0d1117;
-    --surf:    #161b22;
-    --border:  #30363d;
-    --text:    #e6edf3;
-    --muted:   #8b949e;
-    --blue:    #58a6ff;
-    --green:   #3fb950;
-    --orange:  #f78166;
-    --warn:    rgba(210,153,34,0.55);
+    --bg:     #0d1117;
+    --surf:   #161b22;
+    --border: #30363d;
+    --text:   #e6edf3;
+    --muted:  #8b949e;
+    --blue:   #58a6ff;
+    --green:  #3fb950;
+    --orange: #f78166;
   }}
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   body {{
@@ -539,11 +554,10 @@ class GeradorGrafico:
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 1.5rem;
-    max-width: 1100px;
+    max-width: 1200px;
     margin: 0 auto;
   }}
-  .hint {{ font-size: 0.7rem; color: var(--muted); margin-bottom: 0.75rem; }}
-  .chart-wrap {{ position: relative; height: 420px; }}
+  #chart {{ width: 100%; height: 480px; }}
   .stats {{
     display: flex;
     gap: 1rem;
@@ -561,23 +575,10 @@ class GeradorGrafico:
   .stat .l {{ font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.25rem; }}
   .stat .v {{ font-size: 1.35rem; font-weight: bold; }}
   .stat .s {{ font-size: 0.68rem; color: var(--muted); margin-top: 0.15rem; }}
-  .dl {{ color: var(--blue); }}
-  .ul {{ color: var(--green); }}
+  .dl  {{ color: var(--blue);   }}
+  .ul  {{ color: var(--green);  }}
   .tot {{ color: var(--orange); }}
   footer {{ font-size: 0.68rem; color: var(--muted); text-align: center; margin-top: 1.25rem; letter-spacing: 0.06em; }}
-  .btn {{
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--muted);
-    padding: 5px 14px;
-    border-radius: 4px;
-    cursor: pointer;
-    font-family: 'Courier New', monospace;
-    font-size: 0.72rem;
-    letter-spacing: 0.06em;
-    margin-bottom: 0.75rem;
-  }}
-  .btn:hover {{ border-color: var(--blue); color: var(--blue); }}
 </style>
 </head>
 <body>
@@ -588,154 +589,142 @@ class GeradorGrafico:
 </header>
 
 <div class="card">
-  <div class="hint">scroll = zoom &nbsp;&middot;&nbsp; arrastar = pan &nbsp;&middot;&nbsp; duplo clique = resetar</div>
-  <button class="btn" onclick="chart.resetZoom()">&#8635; resetar zoom</button>
-  <div class="chart-wrap">
-    <canvas id="chart"></canvas>
+  <div id="chart"></div>
+  <div class="stats">
+    <div class="stat">
+      <div class="l">Download — max</div>
+      <div class="v dl">{dl_stats['max']}%</div>
+      <div class="s">media {dl_stats['avg']}%</div>
+    </div>
+    <div class="stat">
+      <div class="l">Upload — max</div>
+      <div class="v ul">{ul_stats['max']}%</div>
+      <div class="s">media {ul_stats['avg']}%</div>
+    </div>
+    <div class="stat">
+      <div class="l">Total — max</div>
+      <div class="v tot">{tot_stats['max']}%</div>
+      <div class="s">media {tot_stats['avg']}%</div>
+    </div>
+    <div class="stat">
+      <div class="l">Amostras</div>
+      <div class="v" style="color:var(--muted)">{n}</div>
+      <div class="s">{inicio} &rarr; {fim}</div>
+    </div>
   </div>
-  <div class="stats" id="stats"></div>
 </div>
 
 <footer>gerado em {gerado}</footer>
 
 <script>
-const labels    = {labels_js};
-const downloads = {downloads_js};
-const uploads   = {uploads_js};
-const totais    = {totais_js};
+const timestamps = {ts_js};
+const downloads  = {dl_js};
+const uploads    = {ul_js};
+const totais     = {tot_js};
 
-function avg(a) {{ return (a.reduce((s,v)=>s+v,0)/a.length).toFixed(2); }}
-function max(a) {{ return Math.max(...a).toFixed(2); }}
-
-const warnPlugin = {{
-  id: 'warnLine',
-  afterDraw(c) {{
-    const {{ctx, chartArea, scales}} = c;
-    const y = scales.y.getPixelForValue(75);
-    ctx.save();
-    ctx.strokeStyle = 'rgba(210,153,34,0.5)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([5,5]);
-    ctx.beginPath();
-    ctx.moveTo(chartArea.left, y);
-    ctx.lineTo(chartArea.right, y);
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(210,153,34,0.75)';
-    ctx.font = '10px monospace';
-    ctx.fillText('warn 75%', chartArea.right - 60, y - 4);
-    ctx.restore();
-  }}
+const traceDownload = {{
+  x: timestamps,
+  y: downloads,
+  name: "Download",
+  type: "scatter",
+  mode: "lines+markers",
+  line: {{ color: "#58a6ff", width: 2, shape: "spline", smoothing: 0.5 }},
+  marker: {{ color: "#58a6ff", size: 5 }},
+  fill: "tozeroy",
+  fillcolor: "rgba(88,166,255,0.07)",
+  hovertemplate: "<b>Download</b>: %{{y:.2f}}%<extra></extra>",
 }};
 
-const chart = new Chart(document.getElementById('chart'), {{
-  type: 'line',
-  data: {{
-    labels,
-    datasets: [
-      {{
-        label: 'Download',
-        data: downloads,
-        borderColor: '#58a6ff',
-        backgroundColor: 'rgba(88,166,255,0.08)',
-        pointBackgroundColor: '#58a6ff',
-        pointRadius: 4,
-        pointHoverRadius: 7,
-        borderWidth: 2,
-        tension: 0.3,
-        fill: true,
-      }},
-      {{
-        label: 'Upload',
-        data: uploads,
-        borderColor: '#3fb950',
-        backgroundColor: 'rgba(63,185,80,0.07)',
-        pointBackgroundColor: '#3fb950',
-        pointRadius: 4,
-        pointHoverRadius: 7,
-        borderWidth: 2,
-        tension: 0.3,
-        fill: true,
-      }},
-      {{
-        label: 'Total',
-        data: totais,
-        borderColor: '#f78166',
-        backgroundColor: 'transparent',
-        pointRadius: 0,
-        borderWidth: 2,
-        borderDash: [6, 4],
-        tension: 0.3,
-        fill: false,
-      }},
-    ]
-  }},
-  options: {{
-    responsive: true,
-    maintainAspectRatio: false,
-    interaction: {{ mode: 'index', intersect: false }},
-    plugins: {{
-      legend: {{
-        labels: {{
-          color: '#8b949e',
-          font: {{ family: 'Courier New', size: 11 }},
-          boxWidth: 14,
-          padding: 20,
-        }}
-      }},
-      tooltip: {{
-        backgroundColor: '#161b22',
-        borderColor: '#30363d',
-        borderWidth: 1,
-        titleColor: '#e6edf3',
-        bodyColor: '#8b949e',
-        titleFont: {{ family: 'Courier New', size: 11 }},
-        bodyFont:  {{ family: 'Courier New', size: 11 }},
-        callbacks: {{
-          label: c => ` ${{c.dataset.label}}: ${{c.parsed.y.toFixed(2)}}%`
-        }}
-      }},
-      zoom: {{
-        pan: {{ enabled: true, mode: 'x' }},
-        zoom: {{
-          wheel: {{ enabled: true }},
-          pinch: {{ enabled: true }},
-          mode: 'x',
-        }},
-        limits: {{ x: {{ min: 'original', max: 'original' }} }}
-      }}
-    }},
-    scales: {{
-      x: {{
-        ticks: {{
-          color: '#8b949e',
-          font: {{ family: 'Courier New', size: 10 }},
-          maxRotation: 45,
-          maxTicksLimit: 12,
-        }},
-        grid: {{ color: 'rgba(48,54,61,0.6)' }}
-      }},
-      y: {{
-        min: 0,
-        max: 100,
-        ticks: {{
-          callback: v => v + '%',
-          stepSize: 10,
-          color: '#8b949e',
-          font: {{ family: 'Courier New', size: 10 }},
-        }},
-        grid: {{ color: 'rgba(48,54,61,0.6)' }}
-      }}
-    }}
-  }},
-  plugins: [warnPlugin]
-}});
+const traceUpload = {{
+  x: timestamps,
+  y: uploads,
+  name: "Upload",
+  type: "scatter",
+  mode: "lines+markers",
+  line: {{ color: "#3fb950", width: 2, shape: "spline", smoothing: 0.5 }},
+  marker: {{ color: "#3fb950", size: 5 }},
+  fill: "tozeroy",
+  fillcolor: "rgba(63,185,80,0.07)",
+  hovertemplate: "<b>Upload</b>: %{{y:.2f}}%<extra></extra>",
+}};
 
-document.getElementById('stats').innerHTML = `
-  <div class="stat"><div class="l">Download max</div><div class="v dl">${{max(downloads)}}%</div><div class="s">media ${{avg(downloads)}}%</div></div>
-  <div class="stat"><div class="l">Upload max</div><div class="v ul">${{max(uploads)}}%</div><div class="s">media ${{avg(uploads)}}%</div></div>
-  <div class="stat"><div class="l">Total max</div><div class="v tot">${{max(totais)}}%</div><div class="s">media ${{avg(totais)}}%</div></div>
-  <div class="stat"><div class="l">Amostras</div><div class="v" style="color:#8b949e">{n}</div><div class="s">{inicio} &rarr; {fim}</div></div>
-`;
+const traceTotal = {{
+  x: timestamps,
+  y: totais,
+  name: "Total",
+  type: "scatter",
+  mode: "lines",
+  line: {{ color: "#f78166", width: 2, dash: "dot", shape: "spline", smoothing: 0.5 }},
+  hovertemplate: "<b>Total</b>: %{{y:.2f}}%<extra></extra>",
+}};
+
+const layout = {{
+  paper_bgcolor: "#161b22",
+  plot_bgcolor:  "#161b22",
+  font: {{ family: "Courier New, monospace", color: "#8b949e", size: 11 }},
+  margin: {{ t: 20, r: 20, b: 60, l: 50 }},
+  xaxis: {{
+    gridcolor: "rgba(48,54,61,0.6)",
+    linecolor: "#30363d",
+    tickfont: {{ size: 10 }},
+    rangeslider: {{ visible: true, bgcolor: "#0d1117", bordercolor: "#30363d", thickness: 0.06 }},
+    type: "date",
+  }},
+  yaxis: {{
+    gridcolor: "rgba(48,54,61,0.6)",
+    linecolor: "#30363d",
+    tickfont: {{ size: 10 }},
+    ticksuffix: "%",
+    range: [0, 100],
+    fixedrange: false,
+  }},
+  legend: {{
+    bgcolor: "rgba(22,27,34,0.85)",
+    bordercolor: "#30363d",
+    borderwidth: 1,
+    font: {{ size: 11 }},
+    orientation: "h",
+    x: 0, y: 1.06,
+  }},
+  hovermode: "x unified",
+  hoverlabel: {{
+    bgcolor: "#161b22",
+    bordercolor: "#30363d",
+    font: {{ family: "Courier New, monospace", size: 11, color: "#e6edf3" }},
+  }},
+  shapes: [
+    {{
+      type: "line",
+      x0: 0, x1: 1, xref: "paper",
+      y0: 75, y1: 75, yref: "y",
+      line: {{ color: "rgba(210,153,34,0.55)", width: 1, dash: "dash" }},
+    }}
+  ],
+  annotations: [
+    {{
+      x: 1, xref: "paper",
+      y: 75, yref: "y",
+      text: "warn 75%",
+      showarrow: false,
+      xanchor: "right",
+      yanchor: "bottom",
+      font: {{ color: "rgba(210,153,34,0.8)", size: 10, family: "Courier New" }},
+    }}
+  ],
+}};
+
+const config = {{
+  responsive: true,
+  displaylogo: false,
+  modeBarButtonsToRemove: ["select2d", "lasso2d", "autoScale2d"],
+  toImageButtonOptions: {{
+    format: "png",
+    filename: "trmm_network_{gerado.replace('/', '-').replace(' ', '_').replace(':', '-')}",
+    scale: 2,
+  }},
+}};
+
+Plotly.newPlot("chart", [traceDownload, traceUpload, traceTotal], layout, config);
 </script>
 </body>
 </html>"""
